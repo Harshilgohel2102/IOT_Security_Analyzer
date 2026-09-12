@@ -47,7 +47,6 @@ Make sure the following software is installed on your system:
 
 * Python 3.10 or later
 * Nmap
-* Git
 
 ### Verify Python
 
