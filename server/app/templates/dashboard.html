@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>IoT Security Analyzer Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<div id="criticalBanner" class="critical-banner">⚠️ CRITICAL THREAT DETECTED — IMMEDIATE ACTION REQUIRED</div>
+<div id="warningBanner" class="warning-banner">⚠️ HIGH RISK DEVICES DETECTED — REVIEW RECOMMENDATIONS</div>
+<audio id="alarmSound" loop>
+    <source src="/static/alarm.mp3" type="audio/mpeg">
+</audio>
+
+<div class="navbar">
+    <div class="logo">🛡 IoT Security Analyzer</div>
+    <div class="nav-links">
+        <!-- <button id="scanButton" class="nav-btn scan-btn">🔍 Start Scan</button> -->
+        <button id="clearButton" class="nav-btn clear-btn">🗑 Clear Results</button>
+        <a href="/api/report.pdf" class="nav-btn">⬇ PDF Report</a>
+        <a href="/api/report.csv" class="nav-btn">⬇ CSV Report</a>
+        <a href="/network" class="nav-btn">🗺 Network Map</a>
+    </div>
+</div>
+
+<div class="container">
+    <div class="left">
+        <h1 class="title neon-cyan">IOT</h1>
+        <h1 class="title neon-pink">SECURITY</h1>
+        <h1 class="title neon-cyan">DASHBOARD</h1>
+        <p class="subtitle">Monitor devices. Detect threats. <span class="green">Secure everything.</span></p>
+        <div class="stats">
+            <div class="stat"><h2>Devices</h2><p id="deviceCount">--</p></div>
+            <div class="stat"><h2>Scans</h2><p id="scanCount">--</p></div>
+            <div class="stat critical-stat"><h2>Critical</h2><p id="criticalCount">--</p></div>
+            <div class="stat"><h2>Risk Pressure</h2><p id="riskPressure">--</p></div>
+        </div>
+        <div class="model-strip glow-card">
+            <span>ML Accuracy: <b id="modelAccuracy">--</b></span>
+            <span>Weighted F1: <b id="modelF1">--</b></span>
+            <span>Last Scan: <b id="latestScan">--</b></span>
+        </div>
+    </div>
+    <div class="right">
+        <div class="terminal">
+            <div class="terminal-header">terminal@iot-security</div>
+            <pre id="terminalOutput"></pre>
+        </div>
+    </div>
+</div>
+
+<div class="chart-grid">
+    <div class="chart-card glow-card main-donut">
+        <canvas id="riskChart"></canvas>
+        <div id="chartCenterText" class="chart-center-text">0</div>
+        <div class="chart-caption">Current Exposure</div>
+    </div>
+    <div class="chart-card glow-card wide-card">
+        <div class="card-title">Live Risk Trend</div>
+        <canvas id="trendChart"></canvas>
+    </div>
+    <div class="chart-card glow-card wide-card">
+        <div class="card-title">Most Exposed Ports</div>
+        <canvas id="portsChart"></canvas>
+    </div>
+</div>
+
+<div class="alerts-section glow-card">
+    <div class="card-title">Priority Alerts</div>
+    <div id="alertsList" class="alerts-list"></div>
+</div>
+
+<script>
+let riskChart = null;
+let trendChart = null;
+let portsChart = null;
+let audioEnabled = false;
+
+// Enable audio on first user interaction
+document.addEventListener('click', () => {
+    audioEnabled = true;
+}, { once: true });
+
+async function fetchJson(url) {
+    const res = await fetch(url);
+    return await res.json();
+}
+
+function severityColor(risk) {
+    if (risk === "CRITICAL") return "#ff0033";
+    if (risk === "HIGH") return "#ff6b00";
+    if (risk === "MEDIUM") return "#ffaa00";
+    return "#00ff99";
+}
+
+function renderRiskChart(data) {
+    const ctx = document.getElementById("riskChart").getContext("2d");
+    const counts = [data.critical_risk, data.high_risk, data.medium_risk, data.low_risk];
+    const total = counts.reduce((a, b) => a + b, 0);
+    const centerText = document.getElementById("chartCenterText");
+    centerText.innerText = data.risk_pressure || 0;
+
+    if (riskChart) riskChart.destroy();
+    riskChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+            labels: ["Critical", "High", "Medium", "Low"],
+            datasets: [{
+                data: counts,
+                backgroundColor: ["#ff0033", "#ff6b00", "#ffaa00", "#00ff99"],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: "72%",
+            plugins: { legend: { labels: { color: "white" } } }
+        }
+    });
+
+    const criticalBanner = document.getElementById("criticalBanner");
+    const warningBanner = document.getElementById("warningBanner");
+    const alarm = document.getElementById("alarmSound");
+    document.body.classList.remove("critical-mode", "warning-mode");
+    criticalBanner.style.display = "none";
+    warningBanner.style.display = "none";
+
+    if (data.critical_alarm) {
+        document.body.classList.add("critical-mode");
+        criticalBanner.style.display = "block";
+        centerText.classList.add("fast-blink");
+        // Ensure alarm plays with error handling
+        const playAlarm = async () => {
+            if (!audioEnabled) return; // Wait for user interaction
+            try {
+                alarm.currentTime = 0;
+                await alarm.play();
+            } catch (error) {
+                console.warn("Audio playback failed:", error);
+                // Retry after a short delay
+                setTimeout(() => {
+                    if (audioEnabled) alarm.play().catch(() => {});
+                }, 100);
+            }
+        };
+        playAlarm();
+    } else {
+        centerText.classList.remove("fast-blink");
+        alarm.pause();
+        alarm.currentTime = 0;
+        if (data.high_risk > 0) {
+            document.body.classList.add("warning-mode");
+            warningBanner.style.display = "block";
+        }
+    }
+}
+
+function renderTrendChart(data) {
+    const ctx = document.getElementById("trendChart").getContext("2d");
+    if (trendChart) trendChart.destroy();
+    trendChart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: data.labels,
+            datasets: [{
+                label: "Risk Score",
+                data: data.risk_scores,
+                borderColor: "#00ffff",
+                backgroundColor: "rgba(0,255,255,0.15)",
+                tension: 0.3,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { ticks: { color: "#fff" }, grid: { color: "rgba(255,255,255,0.06)" } },
+                y: { ticks: { color: "#fff" }, grid: { color: "rgba(255,255,255,0.06)" }, suggestedMax: 100 }
+            },
+            plugins: { legend: { labels: { color: "white" } } }
+        }
+    });
+}
+
+function renderPortsChart(data) {
+    const ctx = document.getElementById("portsChart").getContext("2d");
+    if (portsChart) portsChart.destroy();
+    portsChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+            labels: data.labels,
+            datasets: [{
+                label: "Devices Exposing Port",
+                data: data.counts,
+                backgroundColor: "rgba(255,0,122,0.7)",
+                borderColor: "#ff007a",
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { ticks: { color: "#fff" }, grid: { color: "rgba(255,255,255,0.06)" } },
+                y: { ticks: { color: "#fff" }, grid: { color: "rgba(255,255,255,0.06)" }, beginAtZero: true }
+            },
+            plugins: { legend: { labels: { color: "white" } } }
+        }
+    });
+}
+
+function renderTerminal(scans) {
+    const terminal = document.getElementById("terminalOutput");
+    if (!scans.length) {
+        terminal.textContent = "> Waiting for scan data...\n> Run scan_windows.bat to start a live Nmap assessment.";
+        return;
+    }
+    terminal.textContent = scans.map(scan => {
+        const osInfo = scan.os_guess ? ` | OS: ${scan.os_guess}` : '';
+        return `> ${scan.device_ip} | ${scan.risk.padEnd(8)} | Score: ${scan.risk_score} | ML: ${scan.ml_label} (${Math.round(scan.ml_confidence * 100)}%)${osInfo} | Ports: ${scan.open_ports.join(', ') || 'none'}\n  ↳ ${scan.issues[0] || 'No issues detected'}`
+    }).join("\n\n");
+}
+
+function renderAlerts(alerts) {
+    const container = document.getElementById("alertsList");
+    if (!alerts.length) {
+        container.innerHTML = '<div class="alert-row safe">No high-priority alerts in the latest scan set.</div>';
+        return;
+    }
+    
+    // Sanitize HTML content to prevent XSS
+    const sanitizeHtml = (str) => {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    };
+    
+    container.innerHTML = alerts.map(alert => `
+        <div class="alert-row" style="border-left-color:${severityColor(alert.risk)}">
+            <div><b>${sanitizeHtml(alert.device_ip)}</b> <span class="alert-badge" style="background:${severityColor(alert.risk)}">${sanitizeHtml(alert.risk)}</span></div>
+            <div class="alert-sub">Score ${sanitizeHtml(String(alert.risk_score))} — ${sanitizeHtml(alert.headline)}</div>
+        </div>
+    `).join('');
+}
+
+async function refreshAll() {
+    const [stats, scans, trendData, portData, alerts] = await Promise.all([
+        fetchJson('/api/stats'),
+        fetchJson('/api/recent-scans'),
+        fetchJson('/api/trends'),
+        fetchJson('/api/top-ports'),
+        fetchJson('/api/alerts')
+    ]);
+
+    document.getElementById('deviceCount').textContent = stats.total_devices;
+    document.getElementById('scanCount').textContent = stats.total_scans;
+    document.getElementById('criticalCount').textContent = stats.critical_risk;
+    document.getElementById('riskPressure').textContent = stats.risk_pressure;
+    document.getElementById('modelAccuracy').textContent = stats.model_accuracy ? `${Math.round(stats.model_accuracy * 100)}%` : '--';
+    document.getElementById('modelF1').textContent = stats.model_weighted_f1 ? `${Math.round(stats.model_weighted_f1 * 100)}%` : '--';
+    document.getElementById('latestScan').textContent = stats.latest_scan_time ? new Date(stats.latest_scan_time).toLocaleTimeString() : '--';
+
+    renderRiskChart(stats);
+    renderTrendChart(trendData);
+    renderPortsChart(portData);
+    renderTerminal(scans);
+    renderAlerts(alerts);
+}
+
+async function clearScans() {
+    if (!confirm('Are you sure you want to clear all scan results? This action cannot be undone.')) {
+        return;
+    }
+    
+    const button = document.getElementById('clearButton');
+    const originalText = button.textContent;
+    button.textContent = 'Clearing...';
+    button.disabled = true;
+    
+    try {
+        const response = await fetch('/api/clear-scans', { method: 'POST' });
+        if (response.ok) {
+            alert('Scan results cleared successfully!');
+            // Refresh the dashboard immediately
+            await refreshAll();
+        } else {
+            throw new Error('Failed to clear scans');
+        }
+    } catch (error) {
+        console.error('Error clearing scans:', error);
+        alert('Failed to clear scan results. Please try again.');
+    } finally {
+        button.textContent = originalText;
+        button.disabled = false;
+    }
+}
+
+async function startScan() {
+    const button = document.getElementById('scanButton');
+    const originalText = button.textContent;
+    button.textContent = 'Scanning...';
+    button.disabled = true;
+    try {
+        const response = await fetch('/api/start-scan', { method: 'POST' });
+        if (response.ok) {
+            alert('Scan initiated! Results will appear shortly.');
+            await refreshAll();
+        } else {
+            throw new Error('Failed to start scan');
+        }
+    } catch (error) {
+        console.error('Error starting scan:', error);
+        alert('Failed to start scan. Please try again.');
+    } finally {
+        button.textContent = originalText;
+        button.disabled = false;
+    }
+}
+
+// Add event listeners to buttons
+document.getElementById('clearButton').addEventListener('click', clearScans);
+//document.getElementById('scanButton').addEventListener('click', startScan);
+
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

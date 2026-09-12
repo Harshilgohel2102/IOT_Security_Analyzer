@@ -1,0 +1,11 @@
+version: "3.9"
+services:
+  iot-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: iot_security_platform
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server/app/data:/app/server/app/data

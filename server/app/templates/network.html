@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Network Map</title>
+    <script src="https://cdn.jsdelivr.net/npm/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { margin: 0; background: radial-gradient(circle at top, #020617, #000); color: white; font-family: Arial; overflow: hidden; }
+        #network { width: 100vw; height: calc(100vh - 56px); }
+        .topbar { padding: 12px; background: linear-gradient(90deg, #020617, #020b2a); border-bottom: 1px solid cyan; display:flex; justify-content:space-between; align-items:center; }
+        a { color: cyan; text-decoration: none; }
+        #devicePanel { position: fixed; right: -460px; top: 0; width: 440px; height: 100vh; background: #020b2a; border-left: 1px solid cyan; box-shadow: -10px 0 30px rgba(0,255,255,0.3); transition: 0.4s; padding: 15px; overflow-y: auto; z-index: 1000; }
+        #devicePanel.open { right: 0; }
+        .section { margin-top: 15px; padding: 10px; border: 1px solid rgba(0,255,255,0.3); border-radius: 8px; }
+        .port { display: inline-block; margin: 5px; padding: 4px 8px; background: #00ffff22; border: 1px solid cyan; border-radius: 6px; }
+        .issue { margin-top: 8px; padding: 6px; background: #ff003322; border-left: 4px solid red; font-size: 13px; }
+        .issue.info { background:#00ffff11; border-left-color:cyan; }
+        .meta { color:#a5f3fc; font-size:14px; margin-top:5px; }
+        .kv { display:grid; grid-template-columns: 1fr auto; gap:6px 12px; font-size:13px; }
+        .muted { color:#93c5fd; font-size:12px; }
+    </style>
+</head>
+<body>
+<div class="topbar">
+    <div>🗺 <b style="color:cyan">Network Topology Map</b> — <a href="/">Back to Dashboard</a></div>
+    <div>
+        <a href="/api/report.pdf">Download PDF Report</a>
+        &nbsp;|&nbsp;
+        <a href="/api/report.json">JSON Report</a>
+    </div>
+</div>
+<div id="network"></div>
+<div id="devicePanel">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 id="devTitle">Device</h2>
+        <button onclick="closePanel()" style="background:none;border:none;color:#ff0033;font-size:22px;cursor:pointer;font-weight:bold;">✖</button>
+    </div>
+    <div class="meta" id="devHost"></div>
+    <div class="meta" id="devVendor"></div>
+    <div class="meta" id="devOS"></div>
+    <div style="margin-top:10px;">
+        <b>Risk Level:</b> <span id="devRisk"></span><br>
+        <b>Risk Score:</b> <span id="devScore"></span><br>
+        <b>ML Verdict:</b> <span id="devML"></span><br>
+        <b>Confidence:</b> <span id="devConfidence"></span><br>
+        <b>Anomaly:</b> <span id="devAnomaly"></span>
+    </div>
+    <div class="section"><h3>Open Ports</h3><div id="portsList"></div></div>
+    <div class="section"><h3>Detected Services</h3><div id="servicesList"></div></div>
+    <div class="section"><h3>Detected Issues</h3><div id="issuesList"></div></div>
+    <div class="section"><h3>Weak Credential Findings</h3><div id="weakCredsList"></div></div>
+    <div class="section"><h3>Configuration Findings</h3><div id="configList"></div></div>
+    <div class="section"><h3>Threat Indicators</h3><div id="threatList"></div></div>
+    <div class="section"><h3>Traffic Snapshot</h3><div id="trafficProfile"></div></div>
+</div>
+<script>
+let nodes = null;
+let edges = null;
+let network = null;
+
+function riskColor(risk) {
+    if (risk === 'CRITICAL') return '#ff0033';
+    if (risk === 'HIGH') return '#ff6b00';
+    if (risk === 'MEDIUM') return '#ffaa00';
+    return '#00ff99';
+}
+
+function renderList(containerId, items, className = 'issue') {
+    const div = document.getElementById(containerId);
+    if (!items || !items.length) {
+        div.innerHTML = '<div class="muted">No findings recorded.</div>';
+        return;
+    }
+    div.innerHTML = items.map(item => `<div class="${className}">⚠ ${item}</div>`).join('');
+}
+
+function renderTrafficProfile(profile) {
+    const div = document.getElementById('trafficProfile');
+    if (!profile) {
+        div.innerHTML = '<div class="muted">No traffic telemetry submitted for this device.</div>';
+        return;
+    }
+    const rows = [
+        ['Connections / min', profile.connections_per_minute ?? 0],
+        ['Unique remote IPs', profile.unique_remote_ips ?? 0],
+        ['Failed connections', profile.failed_connections ?? 0],
+        ['DNS req / min', profile.dns_requests_per_minute ?? 0],
+        ['Outbound ratio', `${Math.round((profile.outbound_ratio ?? 0) * 100)}%`],
+        ['Beaconing score', `${Math.round((profile.beaconing_score ?? 0) * 100)}%`],
+        ['Unusual ports', profile.unusual_ports_contacted ?? 0]
+    ];
+    const notes = profile.notes ? `<div class="issue info">${profile.notes}</div>` : '';
+    div.innerHTML = `<div class="kv">${rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join('')}</div>${notes}`;
+}
+
+async function loadNetwork() {
+    try {
+        const res = await fetch('/api/network-data');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        
+        if (!data.nodes || !Array.isArray(data.nodes)) {
+            console.error('Invalid nodes data:', data);
+            return;
+        }
+        
+        data.nodes.forEach(n => {
+            if (n.id === 'gateway') { n.font = { color: 'cyan', size: 20, bold: true }; return; }
+            n.label = n.id + '\n' + n.risk;
+            n.title = 'IP: ' + n.id;
+            n.color = riskColor(n.risk);
+            n.font = { color: 'white', size: 16, bold: true };
+            n.shadow = true;
+        });
+        nodes = new vis.DataSet(data.nodes);
+        edges = new vis.DataSet(data.edges || []);
+        network = new vis.Network(document.getElementById('network'), { nodes, edges }, {
+            nodes: { shape: 'dot', scaling: { min: 20, max: 40 } },
+            edges: { color: '#00ffff' },
+            physics: { enabled: true, stabilization: false }
+        });
+        network.on('click', function(params) {
+            if (!params.nodes.length) return;
+            const nodeId = params.nodes[0];
+            if (nodeId === 'gateway') return;
+            const node = nodes.get(nodeId);
+            if (node) openDevicePanel(node);
+        });
+        console.log('Network loaded successfully with', data.nodes.length, 'nodes');
+    } catch (error) {
+        console.error('Error loading network:', error);
+    }
+}
+
+function closePanel() { document.getElementById('devicePanel').classList.remove('open'); }
+
+function openDevicePanel(node) {
+    const panel = document.getElementById('devicePanel');
+    panel.classList.add('open');
+    document.getElementById('devTitle').innerText = 'Device ' + node.id;
+    document.getElementById('devHost').innerText = node.hostname ? `Hostname: ${node.hostname}` : 'Hostname: Not detected';
+    document.getElementById('devVendor').innerText = node.vendor ? `Vendor: ${node.vendor}` : 'Vendor: Unknown';
+    document.getElementById('devOS').innerText = node.os_guess ? `OS Guess: ${node.os_guess}` : 'OS Guess: Not available';
+    document.getElementById('devRisk').innerText = node.risk;
+    document.getElementById('devRisk').style.color = riskColor(node.risk);
+    document.getElementById('devScore').innerText = node.risk_score;
+    document.getElementById('devML').innerText = node.ml_label;
+    document.getElementById('devConfidence').innerText = `${Math.round(node.ml_confidence * 100)}%`;
+    document.getElementById('devAnomaly').innerText = `${Math.round(node.anomaly_score * 100)}%`;
+
+    const portsDiv = document.getElementById('portsList');
+    portsDiv.innerHTML = node.open_ports.length ? node.open_ports.map(p => `<span class="port">Port ${p}</span>`).join('') : 'No open ports detected';
+
+    const servicesDiv = document.getElementById('servicesList');
+    servicesDiv.innerHTML = node.services && node.services.length
+        ? node.services.map(s => `<div class="issue info">${s.protocol.toUpperCase()} ${s.port} • ${s.service || 'unknown'} ${s.product ? `• ${s.product}` : ''}</div>`).join('')
+        : 'No service fingerprints detected';
+
+    renderList('issuesList', node.issues || []);
+    renderList('weakCredsList', node.weak_credentials || [], 'issue info');
+    renderList('configList', node.config_issues || [], 'issue info');
+    renderList('threatList', node.threat_indicators || []);
+    renderTrafficProfile(node.traffic_profile || null);
+}
+
+loadNetwork();
+setInterval(loadNetwork, 10000);
+</script>
+</body>
+</html>

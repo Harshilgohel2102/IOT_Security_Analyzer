@@ -1,0 +1,40 @@
+# ============================================================
+# IoT Security Platform - Agent Configuration
+# ============================================================
+# Update these values based on your deployment environment.
+# The agent reads this file on startup to determine server
+# endpoints, scan parameters, and operational settings.
+# ============================================================
+
+server:
+  # Base URL of the IoT Security Platform server
+  url: "http://127.0.0.1:8000"
+  # Endpoint paths (relative to server url)
+  endpoints:
+    register: "/agent/register"
+    scan_report: "/scan/report"
+    health: "/health"
+  # Request timeout in seconds
+  timeout: 15
+
+scan:
+  # Select scan mode: fast scans a limited top-port set, full scans all TCP ports.
+  scan_mode: "fast"
+  # Nmap scan flags can still be overridden manually. If left empty, the agent
+  # uses mode-specific defaults for fast or full scans.
+  nmap_flags: ""
+  # Subnet mask for automatic subnet detection (CIDR notation)
+  subnet_mask: "/24"
+  # Output directory for scan XML results (relative to agent directory)
+  output_dir: "output"
+  # Interval between scan cycles in seconds (0 = single run)
+  scan_interval: 0
+
+agent:
+  # Human-readable name for this agent (auto-detected if empty)
+  name: ""
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+  # Retry failed server communication attempts
+  max_retries: 3
+  retry_delay: 5
